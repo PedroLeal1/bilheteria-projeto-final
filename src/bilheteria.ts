@@ -5,20 +5,36 @@ import type {
   Pedido,
 } from "./tipos.ts";
 
-import { DadosInvalidosErro, NaoEncontradoErro } from "./dominio.ts";
+import {
+  DadosInvalidosErro,
+  NaoEncontradoErro,
+  PagamentoErro,
+} from "./dominio.ts";
 
 import { calcularTotal, montarIngressos } from "./preco.ts";
 
 import { direitoAMeia } from "./regras.ts";
 
+function comTempoLimite<T>(promessa: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const limite = new Promise<never>((_, rejeitar) => {
+    timer = setTimeout(() => rejeitar(new Error("tempo esgotado")), ms);
+  });
+
+  return Promise.race([promessa, limite]).finally(() => clearTimeout(timer));
+}
+
 export class Bilheteria {
   #eventos: ConfigBilheteria["eventos"];
   #pagar: ConfigBilheteria["pagar"];
+  #limitePagamentoMs: number;
   #proximaReservaId = 1;
 
   constructor(config: ConfigBilheteria) {
     this.#eventos = config.eventos;
     this.#pagar = config.pagar;
+    this.#limitePagamentoMs = config.limitePagamentoMs;
   }
 
   listarEventos(): EventoInfo[] {
@@ -50,7 +66,12 @@ export class Bilheteria {
 
     const total = calcularTotal(ingressos);
 
-    await this.#pagar(total);
+    try {
+      await comTempoLimite(this.#pagar(total), this.#limitePagamentoMs);
+    } catch {
+      evento.liberar(poltronas);
+      throw new PagamentoErro("falha no pagamento");
+    }
 
     return {
       reservaId: this.#proximaReservaId++,
